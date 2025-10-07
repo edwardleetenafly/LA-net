@@ -1,0 +1,234 @@
+bash -c '
+set -euo pipefail
+REPO="la-net"
+mkdir -p "$REPO"/{src/utils,configs,data,runs,notebooks,scripts,docs/adr,.github/ISSUE_TEMPLATE}
+cd "$REPO"
+
+# .gitignore
+cat > .gitignore << "EOF"
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+.ipynb_checkpoints/
+data/
+runs/
+logs/
+checkpoints/
+*.ckpt
+*.pth
+*.pt
+.DS_Store
+Thumbs.db
+EOF
+
+# requirements.txt
+cat > requirements.txt << "EOF"
+torch>=2.3.0
+torchvision>=0.18.0
+torchaudio>=2.3.0
+numpy>=1.26.0
+pandas>=2.2.0
+pyyaml>=6.0.1
+tqdm>=4.66.0
+nibabel>=5.2.0
+SimpleITK>=2.3.1
+scikit-image>=0.24.0
+matplotlib>=3.8.0
+rich>=13.7.0
+EOF
+
+# env.yml (Conda) — if CPU-only or on Mac, remove pytorch-cuda line before creating env
+cat > env.yml << "EOF"
+name: la-net
+channels: [pytorch, nvidia, conda-forge]
+dependencies:
+  - python=3.10
+  - pytorch>=2.3
+  - torchvision>=0.18
+  - torchaudio>=2.3
+  - pytorch-cuda=12.1
+  - numpy>=1.26
+  - pandas>=2.2
+  - pyyaml>=6.0
+  - tqdm>=4.66
+  - nibabel>=5.2
+  - simpleitk>=2.3
+  - scikit-image>=0.24
+  - matplotlib>=3.8
+  - pip
+  - pip:
+      - rich>=13.7
+EOF
+
+# config with seed & toggles
+cat > configs/default.yaml << "EOF"
+seed: 42
+deterministic: true
+cudnn_benchmark: false
+
+data_dir: "data"
+split_csv: "data/splits.csv"
+manifest_csv: "data/manifest.csv"
+
+epochs: 100
+batch_size: 2
+learning_rate: 1e-4
+num_workers: 4
+
+use_clahe: true
+use_cbam: true
+predict_diameter: true
+EOF
+
+# determinism utilities
+cat > src/utils/determinism.py << "EOF"
+import os, random
+import numpy as np
+import torch
+
+DEFAULT_SEED = 42
+
+def seed_everything(seed: int = DEFAULT_SEED, deterministic: bool = True, cudnn_benchmark: bool = False):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = deterministic
+    torch.backends.cudnn.benchmark = cudnn_benchmark
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+EOF
+
+# device helper
+cat > src/utils/device.py << "EOF"
+import torch
+def get_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")  # Apple Silicon
+    return torch.device("cpu")
+EOF
+
+# training stub (wires config + seeds)
+cat > src/train_stub.py << "EOF"
+\"\"\"Minimal training stub to validate wiring.\"\"\"
+import yaml
+from pathlib import Path
+from src.utils.determinism import seed_everything
+from src.utils.device import get_device
+
+def main(cfg_path: str = "configs/default.yaml"):
+    cfg = yaml.safe_load(Path(cfg_path).read_text())
+    seed_everything(cfg.get("seed", 42), cfg.get("deterministic", True), cfg.get("cudnn_benchmark", False))
+    device = get_device()
+    print("Config loaded:", cfg_path)
+    print("Device:", device)
+    print("Ready with:", {k: cfg[k] for k in ["epochs","batch_size","learning_rate"]})
+
+if __name__ == "__main__":
+    main()
+EOF
+
+# GPU check script
+cat > gpu_check.py << "EOF"
+import torch
+from src.utils.determinism import seed_everything
+from src.utils.device import get_device
+
+seed_everything(42, deterministic=True, cudnn_benchmark=False)
+
+print("PyTorch version:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("CUDA device count:", torch.cuda.device_count())
+    print("Device name:", torch.cuda.get_device_name(0))
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    print("MPS (Apple Silicon) available: True")
+else:
+    print("Using CPU")
+
+import torch.nn.functional as F
+x = torch.randn(1, 1, 8, 8, device=get_device())
+k = torch.ones(1, 1, 3, 3, device=get_device()) / 9.0
+y = F.conv2d(x, k, padding=1)
+print("Conv OK, output mean:", y.mean().item())
+EOF
+
+# README
+cat > README.md << "EOF"
+# LA-Net Starter
+
+## Quickstart
+### pip
+python -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+python gpu_check.py
+python -m src.train_stub
+
+### conda
+conda env create -f env.yml
+conda activate la-net
+python gpu_check.py
+python -m src.train_stub
+
+## Layout
+src/ (code) | configs/ (YAML) | data/ | runs/ | notebooks/
+EOF
+
+# minimal provenance: worklog + LFS
+cat > WORKLOG.md << "EOF"
+# Personal Work Log
+YYYY-MM-DD — [scope] — What changed — Why — Links (commit, PR, issue)
+EOF
+
+cat > .gitattributes << "EOF"
+*.nii filter=lfs diff=lfs merge=lfs -text
+*.nii.gz filter=lfs diff=lfs merge=lfs -text
+*.pt filter=lfs diff=lfs merge=lfs -text
+*.pth filter=lfs diff=lfs merge=lfs -text
+EOF
+
+cat > scripts/setup_git_lfs.sh << "EOF"
+#!/usr/bin/env bash
+set -euo pipefail
+git lfs install
+git add .gitattributes
+git commit -m "chore: enable Git LFS for NIfTI and weights" || true
+EOF
+chmod +x scripts/setup_git_lfs.sh
+
+# tiny ADR
+cat > docs/adr/0001-architecture.md << "EOF"
+# ADR 0001: Architecture
+Decision: U-Net + CLAHE preproc + CBAM attention + diameter head (aux loss).
+Consequence: More robust boundaries; a scalar for clinical interpretability.
+EOF
+
+# minimal GitHub templates
+cat > .github/PULL_REQUEST_TEMPLATE.md << "EOF"
+## Summary
+## Related Issues
+## Evidence (metrics/screenshots)
+## Checklist
+- [ ] Small commits
+- [ ] Repro steps / config attached
+EOF
+
+cat > .github/ISSUE_TEMPLATE/feature_request.md << "EOF"
+---
+name: Feature request
+about: Suggest an idea
+---
+**Problem**
+**Proposed solution**
+**Notes**
+EOF
+
+echo "Scaffold created in $(pwd)"
+'
