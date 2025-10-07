@@ -1,0 +1,20 @@
+# Global
+seed: 42
+deterministic: true
+cudnn_benchmark: false
+
+# Data
+data_dir: "data"
+split_csv: "data/splits.csv"
+manifest_csv: "data/manifest.csv"
+
+# Training (placeholder values)
+epochs: 100
+batch_size: 2
+learning_rate: 1e-4
+num_workers: 4
+
+# Feature toggles (for ablations/hypotheses)
+use_clahe: true
+use_cbam: true
+predict_diameter: true
